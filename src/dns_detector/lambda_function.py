@@ -30,7 +30,7 @@ events_client = boto3.client("events")
 # kept here as a constant so we can iterate later without re-deploying anything else.
 SUSPICIOUS_TLDS = {
     "top", "xyz", "tk", "ml", "ga", "cf", "gq", "ru", "cn", "su",
-    "click", "loan", "work", "country", "stream", "download",
+    "click", "loan", "work", "country", "stream", "download", "zip"
 }
 
 # Length thresholds for the leftmost label. DNS tunneling shoves data
