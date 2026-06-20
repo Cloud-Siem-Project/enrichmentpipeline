@@ -44,7 +44,10 @@ def coerce_to_cidr(addr: str) -> str | None:
 
 def lambda_handler(event, context):
     detail = event.get("detail", {}) if isinstance(event, dict) else {}
-    raw = detail.get("src_addr") or detail.get("srcaddr")
+    # threat-intel hits carry the offending host in `blacklisted_ip` — block that,
+    # not our own node's src. dns.scored events have no such field and fall back
+    # to src_addr (unchanged behavior).
+    raw = detail.get("blacklisted_ip") or detail.get("src_addr") or detail.get("srcaddr")
     cidr = coerce_to_cidr(raw or "")
 
     if not cidr:
