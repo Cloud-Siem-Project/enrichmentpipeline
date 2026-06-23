@@ -138,6 +138,15 @@ def lambda_handler(event, context):
         if not qname:
             continue
 
+        # Allowlist the resolver's search-domain noise. The kernel retries
+        # queries with the VPC search suffix appended, so every real lookup also
+        # shows up as "<name>.<region>.compute.internal." — drop those to kill the
+        # duplicate MED detections flagged back in phase 3.
+        qn = qname.rstrip(".").lower()
+        if qn.endswith(".compute.internal") or qn.endswith(".ec2.internal"):
+            suppressed += 1
+            continue
+
         scoring = score_query(qname)
 
         # Suppress LOW-severity to keep the bus signal-to-noise high. We still
