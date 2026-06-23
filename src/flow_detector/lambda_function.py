@@ -31,6 +31,49 @@ BLACKLIST_TTL_SECS = int(os.environ.get("BLACKLIST_TTL_SECS", "300"))
 ddb = boto3.client("dynamodb")
 events_client = boto3.client("events")
 
+# ── GeoIP/ASN enrichment (bundled DB-IP lite mmdb, vendored maxminddb reader) ──
+_GEO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "geoip")
+_geo_readers = None  # (country, asn) | False once init attempted
+
+
+def _geo_init():
+    global _geo_readers
+    if _geo_readers is not None:
+        return _geo_readers
+    try:
+        import maxminddb
+        country = maxminddb.open_database(os.path.join(_GEO_DIR, "dbip-country.mmdb"))
+        asn = maxminddb.open_database(os.path.join(_GEO_DIR, "dbip-asn.mmdb"))
+        _geo_readers = (country, asn)
+    except Exception as exc:  # enrichment is best-effort; never break detection
+        print(f"flow_detector: geoip disabled ({exc!r})")
+        _geo_readers = False
+    return _geo_readers
+
+
+def geo_lookup(ip: str) -> dict:
+    """Country + ASN for a public IP. Empty dict for private/unknown/TEST-NET."""
+    readers = _geo_init()
+    if not readers:
+        return {}
+    country_r, asn_r = readers
+    out = {}
+    try:
+        c = country_r.get(ip) or {}
+        ctry = c.get("country") or {}
+        if ctry.get("names", {}).get("en"):
+            out["country"] = ctry["names"]["en"]
+        if ctry.get("iso_code"):
+            out["country_code"] = ctry["iso_code"]
+        a = asn_r.get(ip) or {}
+        if a.get("autonomous_system_number"):
+            out["asn"] = f"AS{a['autonomous_system_number']}"
+        if a.get("autonomous_system_organization"):
+            out["org"] = a["autonomous_system_organization"]
+    except Exception:
+        return {}
+    return out
+
 # VPC flow-log DEFAULT format (version 2), space-separated:
 #  version account-id interface-id srcaddr dstaddr srcport dstport
 #  protocol packets bytes start end action log-status
@@ -127,6 +170,12 @@ def lambda_handler(event, context):
                 f"proto:{conn_type}:{dport}",
             ],
         }
+
+        geo = geo_lookup(hit_ip)
+        if geo:
+            detail["geo"] = geo
+            if geo.get("country"):
+                detail["signals"].append(f"geo:{geo.get('country_code', geo['country'])}")
 
         events_client.put_events(Entries=[{
             "Source": EB_SOURCE,
