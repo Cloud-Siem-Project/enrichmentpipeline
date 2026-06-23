@@ -30,6 +30,7 @@ FEED_URL = os.environ.get(
 )
 FEED_SOURCE = os.environ.get("FEED_SOURCE", "abuse.ch/feodo")
 TTL_DAYS = int(os.environ.get("TTL_DAYS", "14"))
+EVIDENCE_BUCKET = os.environ.get("EVIDENCE_BUCKET", "")
 
 # deterministic, safe demo entries — TEST-NET-1, unroutable. lets smoke tests
 # trigger a "node → blacklisted IP" hit without touching a real malicious host.
@@ -39,16 +40,42 @@ SEED_IPS = [ip.strip() for ip in os.environ.get(
 
 ddb = boto3.resource("dynamodb").Table(DDB_TABLE)
 
+# raw bytes of the last fetched feed, captured to the evidence bucket
+_last_raw = b""
+
+
+def _capture_feed(raw: bytes) -> None:
+    """Save the downloaded feed snapshot to the evidence bucket — demonstrates
+    'content fetched by a serverless service' being preserved for analysis."""
+    if not EVIDENCE_BUCKET or not raw:
+        return
+    import hashlib
+    now = datetime.now(timezone.utc)
+    sha = hashlib.sha256(raw).hexdigest()
+    key = f"artifacts/year={now:%Y}/month={now:%m}/day={now:%d}/{sha[:16]}-feodo-ipblocklist.txt"
+    try:
+        boto3.client("s3").put_object(
+            Bucket=EVIDENCE_BUCKET, Key=key, Body=raw,
+            ContentType="text/plain",
+            Metadata={"sha256": sha, "source": FEED_URL[:1024]},
+        )
+        print(f"ti_loader: captured feed snapshot -> s3://{EVIDENCE_BUCKET}/{key}")
+    except Exception as exc:  # capture is best-effort
+        print(f"ti_loader: evidence capture failed ({exc!r})")
+
 
 def fetch_feed(url: str) -> list[str]:
     """Fetch + parse the feed. Returns [] on any network/HTTP error so a feed
     outage degrades to 'seed only' rather than failing the whole load."""
+    global _last_raw
     try:
         req = urllib.request.Request(
             url, headers={"User-Agent": "cloudguard-dns-ti-loader/1.0"}
         )
         with urllib.request.urlopen(req, timeout=20) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
+            raw = resp.read()
+            _last_raw = raw
+            body = raw.decode("utf-8", errors="replace")
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         print(f"ti_loader: feed fetch failed ({exc!r}) — seeding demo IPs only")
         return []
@@ -74,6 +101,7 @@ def lambda_handler(event, context):
     ttl = int(time.time()) + TTL_DAYS * 86400
 
     feed_ips = fetch_feed(FEED_URL)
+    _capture_feed(_last_raw)
 
     rows = {ip: FEED_SOURCE for ip in feed_ips}
     for ip in SEED_IPS:        # seed entries never expire-out of a fresh load
