@@ -90,8 +90,10 @@ def score_query(qname: str) -> dict:
         severity = "HIGH"
     elif score >= 2:
         severity = "MED"
-    else:
+    elif score >= 1:
         severity = "LOW"
+    else:
+        severity = "INFO"
 
     return {
         "severity": severity,
@@ -149,11 +151,8 @@ def lambda_handler(event, context):
 
         scoring = score_query(qname)
 
-        # Suppress LOW-severity to keep the bus signal-to-noise high. We still
-        # have the raw log in CWL if we ever need to backfill.
-        if scoring["severity"] == "LOW":
-            suppressed += 1
-            continue
+        # Publish every severity (incl. INFO/LOW) so the console shows the full
+        # picture, not just MED/HIGH. (Was: LOW suppressed for bus tidiness.)
 
         detail = {
             "query_name": qname,
